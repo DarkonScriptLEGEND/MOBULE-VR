@@ -1,6 +1,6 @@
 -- LocalScript in StarterPlayerScripts
 -- Enhanced VR-like camera control for R6 avatars on mobile using gyroscope (client-side).
--- Camera rotates with device tilt/touch, character position unaffected.
+-- Camera rotates with device tilt, character position unaffected.
 -- Falls back to touch-based rotation if gyroscope unavailable.
 -- Uses default R6 arm visuals for hands.
 
@@ -21,16 +21,17 @@ local humanoid = character:WaitForChild("Humanoid")
 local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 print("Character, humanoid, and root part loaded")
 
--- Lock character movement to prevent camera-driven motion
+-- Lock character movement
 humanoid.AutoRotate = false
 print("Humanoid.AutoRotate disabled to lock character facing")
 
 -- Gyro variables
 local initialDeviceCFrame = nil
-local lastDeviceCFrame = nil
 local gyroEnabled = UserInputService.GyroscopeEnabled
 local useGyro = gyroEnabled
 local smoothedRotation = CFrame.new()
+local lerpSpeed = 0.3 -- Increased for smoother tracking
+local gyroSensitivity = 1.5 -- Amplify gyro response
 
 -- Touch control variables
 local touchStart = nil
@@ -39,8 +40,7 @@ local yaw = 0
 local pitch = 0
 local targetYaw = 0
 local targetPitch = 0
-local sensitivity = 0.005 -- Reduced for smoother touch
-local lerpSpeed = 0.2 -- Smoothing factor for both gyro and touch
+local touchSensitivity = 0.004 -- Finer touch control
 
 -- Check gyroscope support
 if not gyroEnabled then
@@ -56,9 +56,8 @@ local function resetInitialRotation()
     local success, _, cframe = pcall(UserInputService.GetDeviceRotation, UserInputService)
     if success then
         initialDeviceCFrame = cframe
-        lastDeviceCFrame = cframe
         smoothedRotation = CFrame.new()
-        print("Gyroscope recalibrated.")
+        print("Gyroscope recalibrated. Initial orientation set.")
     else
         warn("Failed to calibrate gyroscope. Switching to touch.")
         useGyro = false
@@ -96,8 +95,8 @@ end)
 UserInputService.TouchMoved:Connect(function(input, gameProcessed)
     if not gameProcessed and not useGyro and lastTouchPos then
         local delta = input.Position - lastTouchPos
-        targetYaw = targetYaw - delta.X * sensitivity
-        targetPitch = math.clamp(targetPitch - delta.Y * sensitivity, math.rad(-75), math.rad(75))
+        targetYaw = targetYaw - delta.X * touchSensitivity
+        targetPitch = math.clamp(targetPitch - delta.Y * touchSensitivity, math.rad(-80), math.rad(80))
         lastTouchPos = input.Position
     end
 end)
@@ -124,16 +123,16 @@ RunService.RenderStepped:Connect(function(dt)
         -- Gyroscope-based control
         local success, _, currentCFrame = pcall(UserInputService.GetDeviceRotation, UserInputService)
         if success and initialDeviceCFrame then
+            -- Compute relative rotation
             local relativeCFrame = initialDeviceCFrame:Inverse() * currentCFrame
-            lastDeviceCFrame = currentCFrame
             local gyroPitch, gyroYaw, gyroRoll = relativeCFrame:ToEulerAnglesYXZ()
-            gyroPitch = math.clamp(gyroPitch, math.rad(-75), math.rad(75))
-            gyroYaw = math.clamp(gyroYaw, math.rad(-90), math.rad(90))
-            gyroRoll = math.clamp(gyroRoll, math.rad(-15), math.rad(15)) -- Reduced roll
-            local targetRotation = CFrame.Angles(0, -gyroYaw, 0) * CFrame.Angles(gyroPitch, 0, gyroRoll * 0.5) -- Dampen roll
+            gyroPitch = math.clamp(gyroPitch * gyroSensitivity, math.rad(-80), math.rad(80))
+            gyroYaw = gyroYaw * gyroSensitivity
+            gyroRoll = 0 -- Remove roll for stability
+            local targetRotation = CFrame.Angles(0, -gyroYaw, 0) * CFrame.Angles(gyroPitch, 0, 0)
             smoothedRotation = smoothedRotation:Lerp(targetRotation, lerpSpeed)
             newRotation = smoothedRotation
-            print("Gyro updating: Pitch=" .. math.deg(gyroPitch) .. ", Yaw=" .. math.deg(gyroYaw))
+            print(string.format("Gyro: Pitch=%.2f, Yaw=%.2f, Roll=%.2f", math.deg(gyroPitch), math.deg(gyroYaw), math.deg(gyroRoll)))
         else
             warn("Gyro failed in RenderStepped. Switching to touch.")
             useGyro = false
@@ -143,7 +142,7 @@ RunService.RenderStepped:Connect(function(dt)
         yaw = yaw + (targetYaw - yaw) * lerpSpeed
         pitch = pitch + (targetPitch - pitch) * lerpSpeed
         newRotation = CFrame.Angles(0, -yaw, 0) * CFrame.Angles(pitch, 0, 0)
-        print("Touch updating: Pitch=" .. math.deg(pitch) .. ", Yaw=" .. math.deg(yaw))
+        print(string.format("Touch: Pitch=%.2f, Yaw=%.2f", math.deg(pitch), math.deg(yaw)))
     end
 
     -- Update camera
