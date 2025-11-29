@@ -1,8 +1,7 @@
 -- LocalScript in StarterPlayerScripts
--- Enhanced VR-like camera control for R6 avatars on mobile using gyroscope (client-side).
--- Camera rotates with device tilt, character position unaffected.
--- Falls back to touch-based rotation if gyroscope unavailable.
--- Uses default R6 arm visuals for hands.
+-- VR-like + Normal Touch Look Camera for Mobile (R6)
+-- Gyroscope = realistic head tracking
+-- No gyroscope or preference = normal drag-to-look (like PC/mobile FPS)
 
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -11,157 +10,141 @@ local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- Force first-person mode
+-- Force first-person
 player.CameraMode = Enum.CameraMode.LockFirstPerson
-print("Camera mode set to first-person")
 
--- Wait for character
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
-local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
-print("Character, humanoid, and root part loaded")
+local rootPart = character:WaitForChild("HumanoidRootPart")
 
--- Lock character movement
+-- Prevent character from auto-turning with camera
 humanoid.AutoRotate = false
-print("Humanoid.AutoRotate disabled to lock character facing")
 
--- Gyro variables
+-- === SETTINGS ===
+local GYRO_SENSITIVITY = 1.5
+local TOUCH_SENSITIVITY = 0.004
+local LERP_SPEED = 0.25        -- How smooth the camera feels
+local MAX_PITCH = math.rad(85) -- Almost straight up/down
+
+-- === STATE VARIABLES ===
+local useGyro = UserInputService.GyroscopeEnabled
 local initialDeviceCFrame = nil
-local gyroEnabled = UserInputService.GyroscopeEnabled
-local useGyro = gyroEnabled
-local smoothedRotation = CFrame.new()
-local lerpSpeed = 0.3 -- Increased for smoother tracking
-local gyroSensitivity = 1.5 -- Amplify gyro response
 
--- Touch control variables
-local touchStart = nil
-local lastTouchPos = nil
-local yaw = 0
-local pitch = 0
-local targetYaw = 0
-local targetPitch = 0
-local touchSensitivity = 0.004 -- Finer touch control
+local currentYaw = 0
+local currentPitch = 0
 
--- Check gyroscope support
-if not gyroEnabled then
-    warn("No gyroscope detected. Using touch-based camera control.")
-    useGyro = false
-else
-    print("Gyroscope detected. Enabling VR-like tracking.")
-end
+local touchStartPos = nil
+local isTouchLooking = false
 
--- Reset gyroscope calibration
-local function resetInitialRotation()
+-- === FUNCTIONS ===
+local function recalibrateGyro()
     if not useGyro then return end
-    local success, _, cframe = pcall(UserInputService.GetDeviceRotation, UserInputService)
+    local success, _, cf = pcall(UserInputService.GetDeviceRotation, UserInputService)
     if success then
-        initialDeviceCFrame = cframe
-        smoothedRotation = CFrame.new()
-        print("Gyroscope recalibrated. Initial orientation set.")
-    else
-        warn("Failed to calibrate gyroscope. Switching to touch.")
-        useGyro = false
+        initialDeviceCFrame = cf
+        print("Gyro recalibrated")
     end
 end
 
--- Reset on double-tap
-local lastTapTime = 0
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.UserInputType == Enum.UserInputType.Touch and not gameProcessed then
-        local currentTime = tick()
-        if currentTime - lastTapTime < 0.3 then
+local function updateCamera()
+    local headPos = rootPart.Position + Vector3.new(0, 1.6, 0) -- R6 head height
+
+    local rotationCFrame = CFrame.new()
+
+    if useGyro and initialDeviceCFrame then
+        -- === GYRO MODE (realistic VR-like) ===
+        local success, _, deviceCf = pcall(UserInputService.GetDeviceRotation, UserInputService)
+        if success then
+            local relative = initialDeviceCFrame:Inverse() * deviceCf
+            local _, yaw, _ = relative:ToEulerAnglesYXZ()
+            local pitch = -relative:ToOrientation() -- X axis
+
+            pitch = math.clamp(pitch * GYRO_SENSITIVITY, -MAX_PITCH, MAX_PITCH)
+            yaw = -yaw * GYRO_SENSITIVITY
+
+            rotationCFrame = CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+        end
+    else
+        -- === NORMAL TOUCH LOOK (like any mobile FPS) ===
+        rotationCFrame = CFrame.Angles(0, -currentYaw, 0) * CFrame.Angles(currentPitch, 0, 0)
+    end
+
+    camera.CFrame = CFrame.new(headPos) * rotationCFrame
+end
+
+-- === INPUT HANDLING ===
+-- Start dragging to look
+UserInputService.TouchStarted:Connect(function(input, processed)
+    if processed then return end
+    if useGyro then return end -- Don't allow touch look when gyro is active
+
+    touchStartPos = input.Position
+    isTouchLooking = true
+end)
+
+-- Drag to rotate camera
+UserInputService.TouchMoved:Connect(function(input, processed)
+    if processed or not isTouchLooking or useGyro then return end
+
+    local delta = input.Position - touchStartPos
+    currentYaw = currentYaw - delta.X * TOUCH_SENSITIVITY
+    currentPitch = math.clamp(currentPitch - delta.Y * TOUCH_SENSITIVITY, -MAX_PITCH, MAX_PITCH)
+
+    touchStartPos = input.Position -- Important: update start pos for smooth drag
+end)
+
+UserInputService.TouchEnded:Connect(function(input, processed)
+    if not useGyro then
+        isTouchLooking = false
+    end
+end)
+
+-- Double-tap to reset view
+local lastTap = 0
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.UserInputType == Enum.UserInputType.Touch then
+        local now = tick()
+        if now - lastTap < 0.3 then
             if useGyro then
-                resetInitialRotation()
+                recalibrateGyro()
             else
-                targetYaw = 0
-                targetPitch = 0
-                yaw = 0
-                pitch = 0
-                print("Touch rotation reset.")
+                currentYaw = 0
+                currentPitch = 0
+                print("Touch view reset")
             end
         end
-        lastTapTime = currentTime
+        lastTap = now
     end
 end)
 
--- Touch-based camera control
-UserInputService.TouchStarted:Connect(function(input, gameProcessed)
-    if not gameProcessed and not useGyro then
-        touchStart = input.Position
-        lastTouchPos = touchStart
-    end
-end)
-
-UserInputService.TouchMoved:Connect(function(input, gameProcessed)
-    if not gameProcessed and not useGyro and lastTouchPos then
-        local delta = input.Position - lastTouchPos
-        targetYaw = targetYaw - delta.X * touchSensitivity
-        targetPitch = math.clamp(targetPitch - delta.Y * touchSensitivity, math.rad(-80), math.rad(80))
-        lastTouchPos = input.Position
-    end
-end)
-
-UserInputService.TouchEnded:Connect(function(input, gameProcessed)
-    if not gameProcessed and not useGyro then
-        touchStart = nil
-        lastTouchPos = nil
-    end
-end)
-
--- Update camera
-RunService.RenderStepped:Connect(function(dt)
+-- === MAIN LOOP ===
+RunService.RenderStepped:Connect(function()
+    -- Re-force first-person in case something changes it
     if player.CameraMode ~= Enum.CameraMode.LockFirstPerson then
         player.CameraMode = Enum.CameraMode.LockFirstPerson
-        print("Re-enforced first-person mode.")
     end
 
-    -- Get character's position
-    local rootPos = humanoidRootPart.Position + Vector3.new(0, 1.5, 0) -- Head height for R6
-    local newRotation
-
-    if useGyro then
-        -- Gyroscope-based control
-        local success, _, currentCFrame = pcall(UserInputService.GetDeviceRotation, UserInputService)
-        if success and initialDeviceCFrame then
-            -- Compute relative rotation
-            local relativeCFrame = initialDeviceCFrame:Inverse() * currentCFrame
-            local gyroPitch, gyroYaw, gyroRoll = relativeCFrame:ToEulerAnglesYXZ()
-            gyroPitch = math.clamp(gyroPitch * gyroSensitivity, math.rad(-80), math.rad(80))
-            gyroYaw = gyroYaw * gyroSensitivity
-            gyroRoll = 0 -- Remove roll for stability
-            local targetRotation = CFrame.Angles(0, -gyroYaw, 0) * CFrame.Angles(gyroPitch, 0, 0)
-            smoothedRotation = smoothedRotation:Lerp(targetRotation, lerpSpeed)
-            newRotation = smoothedRotation
-            print(string.format("Gyro: Pitch=%.2f, Yaw=%.2f, Roll=%.2f", math.deg(gyroPitch), math.deg(gyroYaw), math.deg(gyroRoll)))
-        else
-            warn("Gyro failed in RenderStepped. Switching to touch.")
-            useGyro = false
-        end
-    else
-        -- Touch-based control with smoothing
-        yaw = yaw + (targetYaw - yaw) * lerpSpeed
-        pitch = pitch + (targetPitch - pitch) * lerpSpeed
-        newRotation = CFrame.Angles(0, -yaw, 0) * CFrame.Angles(pitch, 0, 0)
-        print(string.format("Touch: Pitch=%.2f, Yaw=%.2f", math.deg(pitch), math.deg(yaw)))
-    end
-
-    -- Update camera
-    camera.CFrame = CFrame.new(rootPos) * newRotation
+    updateCamera()
 end)
 
--- Handle character respawn
-player.CharacterAdded:Connect(function(newCharacter)
-    character = newCharacter
-    humanoid = character:WaitForChild("Humanoid")
-    humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+-- === CHARACTER RESPAWN ===
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    humanoid = newChar:WaitForChild("Humanoid")
+    rootPart = newChar:WaitForChild("HumanoidRootPart")
     humanoid.AutoRotate = false
-    print("Character respawned.")
+
     if useGyro then
-        resetInitialRotation()
+        task.wait(1)
+        recalibrateGyro()
     end
 end)
 
--- Initial calibration
+-- Initial gyro calibration
 if useGyro then
-    resetInitialRotation()
+    task.wait(1)
+    recalibrateGyro()
 end
+
+print("VR + Normal Touch Camera System Loaded")
